@@ -110,6 +110,7 @@ func TestEnsureCanonicalConfigCreatesManagedShape(t *testing.T) {
 		"issue_prefix: gc",
 		"issue-prefix: gc",
 		"dolt.auto-start: false",
+		"export.auto: false",
 		"gc.endpoint_origin: managed_city",
 		"gc.endpoint_status: verified",
 	} {
@@ -132,6 +133,7 @@ func TestEnsureCanonicalConfigPreservesUnknownKeysAndScrubsDeprecatedOnes(t *tes
 		"custom_key: keepme",
 		"issue-prefix: old",
 		"dolt.auto-start: true",
+		"export.auto: true",
 		"dolt_server_port: 3307",
 		"dolt_port: 4406",
 		"dolt.password: should-not-stay",
@@ -161,10 +163,13 @@ func TestEnsureCanonicalConfigPreservesUnknownKeysAndScrubsDeprecatedOnes(t *tes
 	if !strings.Contains(text, "custom_key: keepme") {
 		t.Fatalf("config should preserve unknown keys:\n%s", text)
 	}
-	for _, forbidden := range []string{"dolt.password", "dolt_server_port", "dolt_port", "dolt.auto-start: true"} {
+	for _, forbidden := range []string{"dolt.password", "dolt_server_port", "dolt_port", "dolt.auto-start: true", "export.auto: true"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("config should scrub %q:\n%s", forbidden, text)
 		}
+	}
+	if !strings.Contains(text, "export.auto: false") {
+		t.Fatalf("config should normalize export.auto to false:\n%s", text)
 	}
 	if !strings.Contains(text, "issue_prefix: gc") || !strings.Contains(text, "issue-prefix: gc") {
 		t.Fatalf("config should normalize prefix keys:\n%s", text)
@@ -186,6 +191,8 @@ func TestEnsureCanonicalConfigCollapsesDuplicateManagedKeys(t *testing.T) {
 		"gc.endpoint_status: verified",
 		"dolt.auto-start: true",
 		"dolt.auto-start: true",
+		"export.auto: true",
+		"export.auto: true",
 		"",
 	}, "\n")
 	if err := fs.WriteFile(path, []byte(input), 0o644); err != nil {
@@ -215,6 +222,7 @@ func TestEnsureCanonicalConfigCollapsesDuplicateManagedKeys(t *testing.T) {
 		"gc.endpoint_origin: managed_city",
 		"gc.endpoint_status: verified",
 		"dolt.auto-start: false",
+		"export.auto: false",
 	} {
 		if count := countLineOccurrences(text, needle); count != 1 {
 			t.Fatalf("config should contain exactly one %q, found %d:%c%s", needle, count, 10, text)
@@ -226,6 +234,7 @@ func TestEnsureCanonicalConfigCollapsesDuplicateManagedKeys(t *testing.T) {
 		"gc.endpoint_origin: explicit",
 		"gc.endpoint_status: unverified",
 		"dolt.auto-start: true",
+		"export.auto: true",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("config should scrub stale duplicate %q:%c%s", forbidden, 10, text)
@@ -305,6 +314,7 @@ func TestEnsureCanonicalConfigFallsBackToLineRewriteOnMalformedYAML(t *testing.T
 	input := strings.Join([]string{
 		"issue-prefix: stale",
 		"dolt.auto-start: true",
+		"export.auto: true",
 		"dolt_server_port: 3307",
 		"dolt.password: should-not-stay",
 		": not yaml",
@@ -335,6 +345,7 @@ func TestEnsureCanonicalConfigFallsBackToLineRewriteOnMalformedYAML(t *testing.T
 		"issue_prefix: gc",
 		"issue-prefix: gc",
 		"dolt.auto-start: false",
+		"export.auto: false",
 		"gc.endpoint_origin: managed_city",
 		"gc.endpoint_status: verified",
 		": not yaml",
@@ -345,6 +356,9 @@ func TestEnsureCanonicalConfigFallsBackToLineRewriteOnMalformedYAML(t *testing.T
 	}
 	if strings.Contains(text, "dolt_server_port") {
 		t.Fatalf("config should scrub deprecated port key after malformed fallback:\n%s", text)
+	}
+	if strings.Contains(text, "export.auto: true") {
+		t.Fatalf("config should normalize export.auto to false in fallback:\n%s", text)
 	}
 }
 
