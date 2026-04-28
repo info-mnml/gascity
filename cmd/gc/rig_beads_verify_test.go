@@ -85,8 +85,9 @@ func TestMergeRigCustomTypes(t *testing.T) {
 }
 
 // TestVerifyRigBeadsConfig_NoOpWhenAlreadyComplete confirms that a store with
-// the expected issue_prefix and the full required types list registered does
-// not trigger any writes.
+// the expected issue_prefix, full required types list, and dolt.auto-commit
+// already on does not trigger any config writes — only the post-init
+// checkpoint commit fires (a no-op when the working set is clean).
 func TestVerifyRigBeadsConfig_NoOpWhenAlreadyComplete(t *testing.T) {
 	stub := newStubBdConfigRunner(map[string]stubResponse{
 		"config get --json issue_prefix": {
@@ -96,19 +97,25 @@ func TestVerifyRigBeadsConfig_NoOpWhenAlreadyComplete(t *testing.T) {
 			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
 				strings.Join(doctor.RequiredCustomTypes, ","))),
 		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
+		},
 	})
 
 	if err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run); err != nil {
 		t.Fatalf("verifyAndCompleteRigBeadsConfig() err = %v, want nil", err)
 	}
 
-	// Only the two reads — no writes when state already matches.
-	if got := len(stub.calls); got != 2 {
-		t.Fatalf("call count = %d, want 2 (only reads); calls=%v", got, stub.calls)
+	// Three reads + one checkpoint commit — no config writes when state matches.
+	if got := len(stub.calls); got != 4 {
+		t.Fatalf("call count = %d, want 4 (3 reads + 1 dolt commit); calls=%v", got, stub.calls)
 	}
 	for _, c := range stub.calls {
 		if c.args[0] == "config" && c.args[1] == "set" {
-			t.Errorf("unexpected write call: %v", c.args)
+			t.Errorf("unexpected config write call: %v", c.args)
 		}
 	}
 }
@@ -126,6 +133,12 @@ func TestVerifyRigBeadsConfig_SetsMissingIssuePrefix(t *testing.T) {
 		"config get --json types.custom": {
 			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
 				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
 		},
 	})
 
@@ -153,6 +166,12 @@ func TestVerifyRigBeadsConfig_SetsMissingCustomTypes(t *testing.T) {
 		"config set types.custom " + strings.Join(doctor.RequiredCustomTypes, ","): {
 			out: []byte("ok"),
 		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
+		},
 	})
 
 	if err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run); err != nil {
@@ -178,6 +197,12 @@ func TestVerifyRigBeadsConfig_PreservesUserTypes(t *testing.T) {
 		},
 		"config set types.custom " + strings.Join(merged, ","): {
 			out: []byte("ok"),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
 		},
 	})
 
@@ -241,6 +266,12 @@ func TestVerifyRigBeadsConfig_RunsInTargetDir(t *testing.T) {
 			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
 				strings.Join(doctor.RequiredCustomTypes, ","))),
 		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
+		},
 	})
 
 	want := "/path/to/myrig"
@@ -261,6 +292,187 @@ func hasCallWith(calls []stubCall, args []string) bool {
 		}
 	}
 	return false
+}
+
+// TestVerifyRigBeadsConfig_SetsAutoCommitOnWhenOff confirms that a store with
+// dolt.auto-commit=off (bd's documented default) gets it flipped to "on" so
+// subsequent writes anchor in the Dolt branch HEAD instead of accumulating
+// in the working set. Without this, a working-set reset (server restart,
+// batch flush, dolt operation) reverts new beads — the gt-7z7 failure mode.
+func TestVerifyRigBeadsConfig_SetsAutoCommitOnWhenOff(t *testing.T) {
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"off"}`),
+		},
+		"config set dolt.auto-commit on": {
+			out: []byte("ok"),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
+		},
+	})
+
+	if err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run); err != nil {
+		t.Fatalf("verifyAndCompleteRigBeadsConfig() err = %v, want nil", err)
+	}
+
+	want := []string{"config", "set", "dolt.auto-commit", "on"}
+	if !hasCallWith(stub.calls, want) {
+		t.Errorf("expected write call %v, calls=%v", want, stub.calls)
+	}
+}
+
+// TestVerifyRigBeadsConfig_SetsAutoCommitOnWhenUnset confirms that an empty
+// dolt.auto-commit value (key never written) is treated like "off" and gets
+// flipped to "on". A bd init that fails to seed the key leaves it empty
+// rather than at the documented default — the verification step has to
+// repair this regardless of the underlying cause.
+func TestVerifyRigBeadsConfig_SetsAutoCommitOnWhenUnset(t *testing.T) {
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":""}`),
+		},
+		"config set dolt.auto-commit on": {
+			out: []byte("ok"),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("Nothing to commit."),
+		},
+	})
+
+	if err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run); err != nil {
+		t.Fatalf("verifyAndCompleteRigBeadsConfig() err = %v, want nil", err)
+	}
+
+	want := []string{"config", "set", "dolt.auto-commit", "on"}
+	if !hasCallWith(stub.calls, want) {
+		t.Errorf("expected write call %v, calls=%v", want, stub.calls)
+	}
+}
+
+// TestVerifyRigBeadsConfig_RunsCheckpointCommit confirms that the post-init
+// checkpoint commit fires unconditionally so any uncommitted working-set
+// state from bd init lands in branch HEAD before gc rig add returns success.
+func TestVerifyRigBeadsConfig_RunsCheckpointCommit(t *testing.T) {
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {
+			out: []byte("commit hash abc123"),
+		},
+	})
+
+	if err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run); err != nil {
+		t.Fatalf("verifyAndCompleteRigBeadsConfig() err = %v, want nil", err)
+	}
+
+	want := []string{"dolt", "commit", "-m", "gc rig: post-init checkpoint"}
+	if !hasCallWith(stub.calls, want) {
+		t.Errorf("expected checkpoint commit call %v, calls=%v", want, stub.calls)
+	}
+}
+
+// TestVerifyRigBeadsConfig_ErrorOnAutoCommitReadFailure surfaces a typed
+// error when reading dolt.auto-commit fails, instead of silently skipping
+// the durability hardening step.
+func TestVerifyRigBeadsConfig_ErrorOnAutoCommitReadFailure(t *testing.T) {
+	wantErr := errors.New("dolt server unreachable")
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {err: wantErr},
+	})
+
+	err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run)
+	if err == nil {
+		t.Fatal("verifyAndCompleteRigBeadsConfig() err = nil, want error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want it to wrap %v", err, wantErr)
+	}
+}
+
+// TestVerifyRigBeadsConfig_ErrorOnAutoCommitWriteFailure surfaces a typed
+// error when applying dolt.auto-commit=on fails.
+func TestVerifyRigBeadsConfig_ErrorOnAutoCommitWriteFailure(t *testing.T) {
+	wantErr := errors.New("permission denied")
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"off"}`),
+		},
+		"config set dolt.auto-commit on": {err: wantErr},
+	})
+
+	err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run)
+	if err == nil {
+		t.Fatal("verifyAndCompleteRigBeadsConfig() err = nil, want error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want it to wrap %v", err, wantErr)
+	}
+}
+
+// TestVerifyRigBeadsConfig_ErrorOnCheckpointCommitFailure surfaces a typed
+// error when the post-init checkpoint commit fails. A failed commit means
+// uncommitted working-set state is still vulnerable to revert — better to
+// fail loudly than report success against unstable storage.
+func TestVerifyRigBeadsConfig_ErrorOnCheckpointCommitFailure(t *testing.T) {
+	wantErr := errors.New("dolt server gone away")
+	stub := newStubBdConfigRunner(map[string]stubResponse{
+		"config get --json issue_prefix": {
+			out: []byte(`{"key":"issue_prefix","value":"fe"}`),
+		},
+		"config get --json types.custom": {
+			out: []byte(fmt.Sprintf(`{"key":"types.custom","value":%q}`,
+				strings.Join(doctor.RequiredCustomTypes, ","))),
+		},
+		"config get --json dolt.auto-commit": {
+			out: []byte(`{"key":"dolt.auto-commit","value":"on"}`),
+		},
+		"dolt commit -m gc rig: post-init checkpoint": {err: wantErr},
+	})
+
+	err := verifyAndCompleteRigBeadsConfig("/some/rig", "fe", stub.run)
+	if err == nil {
+		t.Fatal("verifyAndCompleteRigBeadsConfig() err = nil, want error")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want it to wrap %v", err, wantErr)
+	}
 }
 
 // TestProviderNeedsRigBeadsConfigVerify confirms that the bd-config

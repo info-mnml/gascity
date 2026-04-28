@@ -36,18 +36,33 @@ var defaultRigBeadsConfigRunner rigBeadsConfigRunner = func(dir string, args ...
 
 // verifyAndCompleteRigBeadsConfig is the Go-side completion check for bd-backed
 // rig initialization. It re-applies issue_prefix and types.custom on the bd
-// store when they are missing or wrong.
+// store when they are missing or wrong, then anchors the post-init state into
+// the Dolt branch HEAD so subsequent writes have a stable base.
 //
-// Background: gc-beads-bd's init op sets these two keys with `|| true` so the
-// init does not fail outright on transient Dolt write failures. The visible
-// symptom is a freshly-added rig where `bd create` returns "database not
-// initialized" and types.custom is absent — both observed across nine rigs
-// in mnml on 2026-04-28 (gt-qjs).
+// Background (gt-qjs): gc-beads-bd's init op sets issue_prefix and types.custom
+// with `|| true` so init does not fail outright on transient Dolt write
+// failures. The visible symptom is a freshly-added rig where `bd create`
+// returns "database not initialized" and types.custom is absent — observed
+// across nine rigs in mnml on 2026-04-28.
 //
-// The function is idempotent: when both keys already match the expected
-// values it issues no writes. On any bd failure it returns a typed error
-// rather than swallowing it, so `gc rig add` can fail loudly instead of
-// reporting "Initialized beads database" against a half-initialized store.
+// Background (gt-7z7): with bd's default `dolt.auto-commit=off`, schema and
+// config writes from `bd init` accumulate in the working set without being
+// captured in the Dolt branch HEAD. After a re-init flow that authorizes
+// remote/history discard (`bd init --reinit-local --discard-remote
+// --destroy-token=DESTROY-<prefix>`), branch HEAD still references the
+// pre-reinit state. Anything that resets the working set to HEAD —
+// auto-commit batch flush, server restart, or external dolt operation —
+// reverts new beads and resurrects pre-reinit ones. Detected on
+// 2026-04-28 in the gastown rig: a freshly-created `gt-wqi` vanished
+// while the pre-reinit `gt-fq1` reappeared; beads created >1 minute
+// after re-init stayed because by then HEAD had advanced.
+//
+// The function is idempotent: when state already matches expected values it
+// issues no config writes. The post-init `bd dolt commit` is a no-op when
+// the working set is clean (bd reports "Nothing to commit." with exit 0).
+// On any bd failure it returns a typed error rather than swallowing it, so
+// `gc rig add` can fail loudly instead of reporting "Initialized beads
+// database" against a half-initialized store.
 func verifyAndCompleteRigBeadsConfig(dir, prefix string, runner rigBeadsConfigRunner) error {
 	if runner == nil {
 		runner = defaultRigBeadsConfigRunner
@@ -76,6 +91,20 @@ func verifyAndCompleteRigBeadsConfig(dir, prefix string, runner rigBeadsConfigRu
 		if _, err := runner(dir, "config", "set", "types.custom", strings.Join(merged, ",")); err != nil {
 			return fmt.Errorf("setting types.custom at %s: %w", dir, err)
 		}
+	}
+
+	autoCommit, err := readBdConfigJSONValue(runner, dir, "dolt.auto-commit")
+	if err != nil {
+		return fmt.Errorf("reading dolt.auto-commit from bd config at %s: %w", dir, err)
+	}
+	if autoCommit != "on" {
+		if _, err := runner(dir, "config", "set", "dolt.auto-commit", "on"); err != nil {
+			return fmt.Errorf("setting dolt.auto-commit=on at %s: %w", dir, err)
+		}
+	}
+
+	if _, err := runner(dir, "dolt", "commit", "-m", "gc rig: post-init checkpoint"); err != nil {
+		return fmt.Errorf("anchoring post-init checkpoint at %s: %w", dir, err)
 	}
 	return nil
 }
