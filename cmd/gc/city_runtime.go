@@ -68,8 +68,10 @@ type CityRuntime struct {
 	standaloneRigStores map[string]beads.Store
 
 	// Bead-driven reconciler state (Phase 2f).
-	sessionDrains  *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
-	demandSnapshot *runtimeDemandSnapshot
+	sessionDrains     *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
+	asyncStartLimiter chan struct{}
+	asyncStarts       asyncStartTracker
+	demandSnapshot    *runtimeDemandSnapshot
 
 	convHandler         *convergence.Handler     // nil until bead store available
 	convStoreAdapter    *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
@@ -204,6 +206,7 @@ func newCityRuntime(p CityRuntimeParams) *CityRuntime {
 		poolSessions:            p.PoolSessions,
 		poolDeathHandlers:       p.PoolDeathHandlers,
 		suspendedNames:          suspendedNames,
+		asyncStartLimiter:       make(chan struct{}, defaultMaxParallelStartsPerWave),
 		convergenceReqCh:        p.ConvergenceReqCh,
 		reloadReqCh: func() chan reloadRequest {
 			if p.ReloadReqCh != nil {
@@ -1330,6 +1333,9 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		cr.cfg.Daemon.DriftDrainTimeoutDuration(),
 		cr.stdout, cr.stderr, trace,
 		withAsyncStartExecution(),
+		withAsyncStartFollowUp(cr.requestAsyncStartFollowUpTick),
+		withAsyncStartLimiter(cr.ensureAsyncStartLimiter()),
+		withAsyncStartTracker(&cr.asyncStarts),
 	)
 	cr.requestDeferredDrainFollowUpTick()
 	if trace != nil {
@@ -1391,6 +1397,41 @@ func (cr *CityRuntime) requestDeferredDrainFollowUpTick() {
 	select {
 	case cr.pokeCh <- struct{}{}:
 	default:
+	}
+}
+
+func (cr *CityRuntime) ensureAsyncStartLimiter() chan struct{} {
+	if cr.asyncStartLimiter == nil {
+		cr.asyncStartLimiter = make(chan struct{}, defaultMaxParallelStartsPerWave)
+	}
+	return cr.asyncStartLimiter
+}
+
+func (cr *CityRuntime) requestAsyncStartFollowUpTick() {
+	if cr == nil {
+		return
+	}
+	// Async completion can commit, rollback, or reject stale work; each case
+	// should prompt one cheap reconciliation pass to observe the new reality.
+	select {
+	case cr.pokeCh <- struct{}{}:
+	default:
+	}
+}
+
+func (cr *CityRuntime) waitForAsyncStarts() {
+	if cr == nil {
+		return
+	}
+	timeout := time.Duration(0)
+	if cr.cfg != nil {
+		timeout = cr.cfg.Daemon.ShutdownTimeoutDuration()
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if !cr.asyncStarts.wait(timeout) && cr.stderr != nil {
+		fmt.Fprintf(cr.stderr, "%s: async session starts still running after %s; continuing shutdown\n", cr.logPrefix, timeout) //nolint:errcheck // best-effort stderr
 	}
 }
 
@@ -1826,6 +1867,7 @@ func (cr *CityRuntime) beginTraceCycle(trigger, detail string, sessionBeads *ses
 // normal shutdown) — only the first call takes effect.
 func (cr *CityRuntime) shutdown() {
 	cr.shutdownOnce.Do(func() {
+		cr.waitForAsyncStarts()
 		if cr.trace != nil {
 			_ = cr.trace.Close()
 		}

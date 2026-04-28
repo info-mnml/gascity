@@ -95,6 +95,18 @@ func allDependenciesAliveForTemplate(
 	cityName string,
 	store beads.Store,
 ) bool {
+	return allDependenciesAliveForTemplateWithClock(template, cfg, desiredState, sp, cityName, store, clock.Real{})
+}
+
+func allDependenciesAliveForTemplateWithClock(
+	template string,
+	cfg *config.City,
+	desiredState map[string]TemplateParams,
+	sp runtime.Provider,
+	cityName string,
+	store beads.Store,
+	clk clock.Clock,
+) bool {
 	cfgAgent := findAgentByTemplate(cfg, template)
 	if cfgAgent == nil || len(cfgAgent.DependsOn) == 0 {
 		return true
@@ -104,7 +116,7 @@ func allDependenciesAliveForTemplate(
 		if depCfg == nil {
 			continue // dependency not in config — skip
 		}
-		if !dependencyTemplateAlive(dep, cfg, desiredState, sp, cityName, store) {
+		if !dependencyTemplateAlive(dep, cfg, desiredState, sp, cityName, store, clk) {
 			return false
 		}
 	}
@@ -122,7 +134,7 @@ func allDependenciesAlive(
 	cityName string,
 	store beads.Store,
 ) bool {
-	return allDependenciesAliveForTemplate(normalizedSessionTemplate(session, cfg), cfg, desiredState, sp, cityName, store)
+	return allDependenciesAliveForTemplateWithClock(normalizedSessionTemplate(session, cfg), cfg, desiredState, sp, cityName, store, clock.Real{})
 }
 
 func pendingCreateSessionStillLeased(session beads.Bead, cfg *config.City, clk clock.Clock) bool {
@@ -150,6 +162,9 @@ func pendingCreateStartInFlight(session beads.Bead, clk clock.Clock, startupTime
 		return false
 	}
 	if startupTimeout <= 0 {
+		// Disabling the provider Start() deadline must not disable stuck-bead
+		// recovery forever. Use the default lease window for in-flight detection
+		// while leaving the actual Start() context unwrapped.
 		startupTimeout = time.Minute
 	}
 	now := time.Now()
@@ -177,7 +192,7 @@ func pendingCreateStartInFlight(session beads.Bead, clk clock.Clock, startupTime
 // suspended agents). Used to distinguish "orphaned" (removed from config)
 // from "suspended" (still in config, not runnable) when closing beads.
 //
-// Returns the number of sessions woken this tick.
+// Returns the number of start attempts issued or enqueued this tick.
 //
 //nolint:unparam // compatibility wrapper retains the full production signature.
 func reconcileSessionBeads(
