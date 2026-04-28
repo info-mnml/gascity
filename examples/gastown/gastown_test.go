@@ -487,6 +487,183 @@ func TestWorktreeSetupPreservesTrackedFilesInPrepopulatedTargetDir(t *testing.T)
 	}
 }
 
+// TestWorktreeSetupPropagatesRigClaudeDir verifies that worktree-setup.sh
+// copies the rig root's .claude directory into the freshly-created worktree.
+//
+// Regression guard for gt-80h (2026-04-28): polecat sessions froze at the
+// settings.json prompt because Claude Code expected .claude to be present
+// in the worktree but the script never propagated it from the rig root.
+func TestWorktreeSetupPropagatesRigClaudeDir(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "assets", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	// Rig root .claude (untracked: lives outside git but next to the worktree).
+	rigClaude := filepath.Join(repo, ".claude")
+	if err := os.MkdirAll(filepath.Join(rigClaude, "commands"), 0o755); err != nil {
+		t.Fatalf("creating rig .claude dir: %v", err)
+	}
+	settingsContent := `{"hooks":{"SessionStart":[{"matcher":""}]}}` + "\n"
+	if err := os.WriteFile(filepath.Join(rigClaude, "settings.json"), []byte(settingsContent), 0o644); err != nil {
+		t.Fatalf("writing rig settings.json: %v", err)
+	}
+	commandContent := "review\n"
+	if err := os.WriteFile(filepath.Join(rigClaude, "commands", "review.md"), []byte(commandContent), 0o644); err != nil {
+		t.Fatalf("writing rig command file: %v", err)
+	}
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "polecat-a")
+	runCmd(t, tmp, "sh", script, repo, worktree, "polecat-a")
+
+	settingsData, err := os.ReadFile(filepath.Join(worktree, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("reading worktree settings.json: %v", err)
+	}
+	if got := string(settingsData); got != settingsContent {
+		t.Errorf("worktree settings.json = %q, want %q", got, settingsContent)
+	}
+
+	commandData, err := os.ReadFile(filepath.Join(worktree, ".claude", "commands", "review.md"))
+	if err != nil {
+		t.Fatalf("reading worktree command file: %v", err)
+	}
+	if got := string(commandData); got != commandContent {
+		t.Errorf("worktree command file = %q, want %q", got, commandContent)
+	}
+
+	if status := runCmd(t, tmp, "git", "-C", worktree, "status", "--porcelain"); status != "" {
+		t.Fatalf("expected clean worktree after .claude copy (gitignored), got:\n%s", status)
+	}
+}
+
+// TestWorktreeSetupSkipsClaudeDirWhenMissing verifies that the script does not
+// fail when the rig root has no .claude directory.
+func TestWorktreeSetupSkipsClaudeDirWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "assets", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "polecat-a")
+	runCmd(t, tmp, "sh", script, repo, worktree, "polecat-a")
+
+	if _, err := os.Stat(filepath.Join(worktree, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no .claude/settings.json when rig root lacks one, got err=%v", err)
+	}
+}
+
+// TestWorktreeSetupBackfillsClaudeOnExistingWorktree verifies that re-running
+// the script on an existing worktree backfills a missing .claude directory.
+// This is the recovery path for worktrees created before the fix landed.
+func TestWorktreeSetupBackfillsClaudeOnExistingWorktree(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "assets", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "polecat-a")
+
+	runCmd(t, tmp, "sh", script, repo, worktree, "polecat-a")
+
+	if err := os.RemoveAll(filepath.Join(worktree, ".claude")); err != nil {
+		t.Fatalf("removing worktree .claude: %v", err)
+	}
+	rigClaude := filepath.Join(repo, ".claude")
+	if err := os.MkdirAll(rigClaude, 0o755); err != nil {
+		t.Fatalf("creating rig .claude dir: %v", err)
+	}
+	settingsContent := `{"hooks":{}}` + "\n"
+	if err := os.WriteFile(filepath.Join(rigClaude, "settings.json"), []byte(settingsContent), 0o644); err != nil {
+		t.Fatalf("writing rig settings.json: %v", err)
+	}
+
+	runCmd(t, tmp, "sh", script, repo, worktree, "polecat-a")
+
+	settingsData, err := os.ReadFile(filepath.Join(worktree, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("reading worktree settings.json after backfill: %v", err)
+	}
+	if got := string(settingsData); got != settingsContent {
+		t.Errorf("worktree settings.json = %q, want %q", got, settingsContent)
+	}
+}
+
+// TestWorktreeSetupPreservesExistingClaudeFiles verifies that worktree files
+// with the same path as rig root .claude entries are not overwritten. This
+// keeps locally-customized session config intact when the script reruns.
+func TestWorktreeSetupPreservesExistingClaudeFiles(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "assets", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	rigClaude := filepath.Join(repo, ".claude")
+	if err := os.MkdirAll(rigClaude, 0o755); err != nil {
+		t.Fatalf("creating rig .claude dir: %v", err)
+	}
+	rigContent := "rig\n"
+	if err := os.WriteFile(filepath.Join(rigClaude, "settings.json"), []byte(rigContent), 0o644); err != nil {
+		t.Fatalf("writing rig settings.json: %v", err)
+	}
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "polecat-a")
+	stagedSettings := filepath.Join(worktree, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(stagedSettings), 0o755); err != nil {
+		t.Fatalf("creating staged .claude dir: %v", err)
+	}
+	stagedContent := "local override\n"
+	if err := os.WriteFile(stagedSettings, []byte(stagedContent), 0o644); err != nil {
+		t.Fatalf("writing staged settings.json: %v", err)
+	}
+
+	runCmd(t, tmp, "sh", script, repo, worktree, "polecat-a")
+
+	settingsData, err := os.ReadFile(stagedSettings)
+	if err != nil {
+		t.Fatalf("reading staged settings.json: %v", err)
+	}
+	if got := string(settingsData); got != stagedContent {
+		t.Errorf("worktree settings.json = %q, want %q (preserved local override)", got, stagedContent)
+	}
+}
+
 func TestWorktreeSetupSupportsLegacySignature(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")

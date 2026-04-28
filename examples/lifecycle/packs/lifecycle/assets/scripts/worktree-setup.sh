@@ -38,9 +38,40 @@ else
     SYNC="${4:-}"
 fi
 
+# rig root の .claude を worktree に追加コピーする (既存ファイルは保護)。
+# Claude Code は worktree の .claude/settings.json を必要とするが、git worktree
+# 作成直後は空のため、起動時に settings.json プロンプトで停止する事故が発生する。
+copy_claude_from_rig() {
+    SRC="$RIG_ROOT/.claude"
+    [ -d "$SRC" ] || return 0
+    mkdir -p "$WT/.claude"
+    copy_tree_additive "$SRC" "$WT/.claude"
+}
+
+# 再帰的にディレクトリツリーをコピーする。既存ファイルは上書きしない (additive)。
+copy_tree_additive() (
+    SRC="$1"
+    DST="$2"
+
+    if [ -d "$SRC" ]; then
+        mkdir -p "$DST"
+        for ENTRY in "$SRC"/.[!.]* "$SRC"/..?* "$SRC"/*; do
+            [ -e "$ENTRY" ] || continue
+            copy_tree_additive "$ENTRY" "$DST/$(basename "$ENTRY")"
+        done
+        exit 0
+    fi
+
+    if [ -e "$DST" ]; then
+        exit 0
+    fi
+    cp -p "$SRC" "$DST"
+)
+
 # Idempotent: skip if worktree already exists.
 if [ -d "$WT/.git" ] || [ -f "$WT/.git" ]; then
     [ "$SYNC" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
+    copy_claude_from_rig
     exit 0
 fi
 
@@ -155,6 +186,9 @@ append_exclude ".opencode/"
 append_exclude ".github/hooks/"
 append_exclude ".github/copilot-instructions.md"
 append_exclude "state.json"
+
+# rig root の .claude を worktree にコピー (Claude Code が settings.json を要求するため)。
+copy_claude_from_rig
 
 # Optional sync.
 [ "$SYNC" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
