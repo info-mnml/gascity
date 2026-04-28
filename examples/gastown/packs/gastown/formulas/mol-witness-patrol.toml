@@ -378,8 +378,11 @@ handle the shutdown dance (multi-stage interrogation with due process):
 gc bd create --type=warrant \
   --title="Stuck: <agent>" \
   --metadata '{"target":"<session-name>","reason":"No progress on <bead> for <duration>","requester":"witness"}' \
-  --label=pool:dog
+  --set-metadata gc.routed_to=dog
 ```
+
+`gc.routed_to=dog` matches the dog pool's work query. Pool labels
+(`--label=pool:dog`) are legacy and no longer route work.
 
 The dog pool picks up the warrant and runs `mol-shutdown-dance`, which
 gives the polecat 3 chances to prove it's alive before killing it.

@@ -130,8 +130,12 @@ for the dog pool:
 gc bd create --type=warrant \
   --title="Stuck: <agent>" \
   --metadata '{"target":"<session>","reason":"<reason>","requester":"witness"}' \
-  --label=pool:dog
+  --set-metadata gc.routed_to=dog
 ```
+
+The `gc.routed_to=dog` metadata routes the warrant to the dog pool's
+work query. Pool labels (`--label=pool:dog`) are legacy and do not
+route work to the dog pool.
 
 The dog pool runs `mol-shutdown-dance` — a multi-stage interrogation
 that gives the polecat 3 chances to prove it's alive before killing it.
@@ -250,7 +254,7 @@ gc mail send mayor/ -s "ESCALATION: Brief description [HIGH]" -m "Details"
 | Salvage worktree work | `git add -A && git commit && git push origin HEAD` |
 | Delete worktree | `git worktree remove <path> --force` |
 | Set branch metadata | `gc bd update <id> --set-metadata branch=<name>` |
-| File stuck-agent warrant | `gc bd create --type=warrant --label=pool:dog --metadata '{...}'` |
+| File stuck-agent warrant | `gc bd create --type=warrant --set-metadata gc.routed_to=dog --metadata '{...}'` |
 
 Rig: {{ .RigName }}
 Working directory: {{ .WorkDir }}

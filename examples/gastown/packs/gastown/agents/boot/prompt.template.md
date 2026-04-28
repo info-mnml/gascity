@@ -92,8 +92,12 @@ Drain-ack and exit. Next Boot tick will re-evaluate.
 gc bd create --type=warrant \
   --title="Stuck: deacon" \
   --metadata '{"target":"deacon","reason":"Stale patrol wisp, no activity","requester":"boot"}' \
-  --label=pool:dog
+  --set-metadata gc.routed_to=dog
 ```
+The `gc.routed_to=dog` metadata is what the dog pool's work query
+matches on. Pool labels (`--label=pool:dog`) are legacy and no longer
+route work to the dog pool.
+
 The dog pool picks up the warrant and runs the shutdown dance.
 
 ### Step 4: Signal done and exit
@@ -124,7 +128,7 @@ up your session and spawns you again next tick.
 | View deacon output | `{{ cmd }} agent peek deacon 30` |
 | Check deacon work | `gc bd list --assignee=deacon --status=in_progress --json` |
 | Nudge deacon | `{{ cmd }} nudge deacon "message"` |
-| File stuck warrant | `gc bd create --type=warrant --label=pool:dog --metadata '{...}'` |
+| File stuck warrant | `gc bd create --type=warrant --set-metadata gc.routed_to=dog --metadata '{...}'` |
 | Check agents | `{{ cmd }} agent list` |
 
 Working directory: {{ .WorkDir }}

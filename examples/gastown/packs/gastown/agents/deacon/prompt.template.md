@@ -106,8 +106,12 @@ response is always the same:
 gc bd create --type=warrant \
   --title="Stuck: <agent>" \
   --metadata '{"target":"<session>","reason":"<reason>","requester":"deacon"}' \
-  --label=pool:dog
+  --set-metadata gc.routed_to=dog
 ```
+
+The `gc.routed_to=dog` metadata is what the dog pool's work query
+matches on. Pool labels (`--label=pool:dog`) are legacy and no longer
+route work to the dog pool.
 
 2. The dog pool picks up the warrant and runs `mol-shutdown-dance`
 3. The shutdown dance gives the stuck agent 3 chances to prove it's alive
@@ -163,7 +167,7 @@ Individual stuck agents don't need escalation — the warrant system handles the
 | List convoys | `gc convoy list` |
 | Find cross-rig deps | `gc bd dep list <id> --direction=up --type=blocks --json` |
 | Convert dep type | `gc bd dep remove <id> <dep>` then `gc bd dep add <id> <dep> --type=related` |
-| File stuck-agent warrant | `gc bd create --type=warrant --label=pool:dog --metadata '{...}'` |
+| File stuck-agent warrant | `gc bd create --type=warrant --set-metadata gc.routed_to=dog --metadata '{...}'` |
 | Run system diagnostics | `gc doctor` |
 | Compact wisps (dry run) | `gc bd mol wisp gc --age 24h --dry-run` |
 | Compact wisps | `gc bd mol wisp gc --age 24h` |
