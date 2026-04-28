@@ -1,0 +1,17 @@
+# Manager identity holder template.
+#
+# Designed for `gc session new manager --alias m-<role>` to give a
+# human (BA, CFO, CTO, etc.) a stable mailing identity. Each session
+# is a passive participant in mail send/receive — no autonomous work,
+# no nudge loop.
+#
+# Unlike configured named singletons (mayor, deacon, boot, witness),
+# this template is NOT registered in [[named_session]], so the
+# reconciler treats each session as a manual session and preserves
+# the user-supplied alias through the manual-session path.
+scope = "city"
+wake_mode = "fresh"
+work_dir = ".gc/agents/managers/{{.AgentBase}}"
+min_active_sessions = 0
+max_active_sessions = 10
+idle_timeout = "24h"

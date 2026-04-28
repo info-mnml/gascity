@@ -708,8 +708,8 @@ func TestAllPromptTemplatesExist(t *testing.T) {
 		}
 	}
 
-	if count != 6 {
-		t.Errorf("found %d prompt templates, want 6", count)
+	if count != 7 {
+		t.Errorf("found %d prompt templates, want 7", count)
 	}
 }
 
@@ -875,12 +875,13 @@ func TestCombinedPackParses(t *testing.T) {
 		t.Errorf("pack imports[\"maintenance\"].Source = %q, want %q", maintImp.Source, "../maintenance")
 	}
 
-	// Expect 6 locally-discovered agents. Dog comes from the maintenance import
+	// Expect 7 locally-discovered agents. Dog comes from the maintenance import
 	// and is themed via a pack patch, not a local agent file.
 	agents := discoverPackAgents(t, filepath.Join("packs", "gastown"))
 	want := map[string]bool{
 		"mayor": false, "deacon": false, "boot": false,
 		"witness": false, "refinery": false, "polecat": false,
+		"manager": false,
 	}
 	for _, a := range agents {
 		if _, ok := want[a.Name]; ok {
@@ -894,12 +895,12 @@ func TestCombinedPackParses(t *testing.T) {
 			t.Errorf("missing pack agent %q", name)
 		}
 	}
-	if len(agents) != 6 {
-		t.Errorf("pack has %d locally-discovered agents, want 6", len(agents))
+	if len(agents) != 7 {
+		t.Errorf("pack has %d locally-discovered agents, want 7", len(agents))
 	}
 
 	// Verify city-scoped agents have scope = "city".
-	wantCity := map[string]bool{"mayor": true, "deacon": true, "boot": true}
+	wantCity := map[string]bool{"mayor": true, "deacon": true, "boot": true, "manager": true}
 	for _, a := range agents {
 		if wantCity[a.Name] && a.Scope != "city" {
 			t.Errorf("agent %q: scope = %q, want %q", a.Name, a.Scope, "city")
@@ -916,6 +917,7 @@ func TestPackUsesIsolatedWorkDirs(t *testing.T) {
 		"witness":  ".gc/agents/{{.Rig}}/witness",
 		"refinery": ".gc/worktrees/{{.Rig}}/refinery",
 		"polecat":  ".gc/worktrees/{{.Rig}}/polecats/{{.AgentBase}}",
+		"manager":  ".gc/agents/managers/{{.AgentBase}}",
 	}
 	for _, a := range agents {
 		if expected, ok := want[a.Name]; ok && a.WorkDir != expected {
@@ -935,13 +937,73 @@ func TestPackPromptFilesExist(t *testing.T) {
 	}
 }
 
+// TestManagerTemplateIsMultiInstanceManualSession verifies that the manager
+// template — added for `gc session new manager --alias m-<role>` — supports
+// multiple concurrent sessions and does NOT register a configured named
+// session. Together those properties keep user-supplied aliases on the
+// manual-session path of the reconciler, where alias preservation lives.
+//
+// Regression guard for gt-ofm: configured named templates (boot, witness,
+// deacon) overwrite the alias on the configured-named path. Manager must
+// not reintroduce that behavior.
+func TestManagerTemplateIsMultiInstanceManualSession(t *testing.T) {
+	var manager *config.Agent
+	for _, a := range discoverPackAgents(t, filepath.Join("packs", "gastown")) {
+		a := a
+		if a.Name == "manager" {
+			manager = &a
+			break
+		}
+	}
+	if manager == nil {
+		t.Fatal("manager agent not discovered in gastown pack")
+	}
+	if !manager.SupportsMultipleSessions() {
+		t.Errorf("manager.SupportsMultipleSessions() = false, want true (max_active_sessions must not be 1)")
+	}
+	if manager.Scope != "city" {
+		t.Errorf("manager.Scope = %q, want %q", manager.Scope, "city")
+	}
+	if manager.PromptTemplate == "" {
+		t.Errorf("manager.PromptTemplate is empty; expected discovery to attach prompt.template.md")
+	}
+	if manager.Nudge != "" {
+		t.Errorf("manager.Nudge = %q, want empty (manager is passive — no autonomous loop)", manager.Nudge)
+	}
+
+	// Verify the manager template is NOT registered as a configured named
+	// session in pack.toml. Configured named sessions take the
+	// `tp.Alias = identity` path in the reconciler and overwrite the
+	// user-supplied alias; manager must avoid that path entirely.
+	dir := exampleDir()
+	packTomlPath := filepath.Join(dir, "packs", "gastown", "pack.toml")
+	data, err := os.ReadFile(packTomlPath)
+	if err != nil {
+		t.Fatalf("reading pack.toml: %v", err)
+	}
+	var packDoc struct {
+		NamedSessions []struct {
+			Name     string `toml:"name"`
+			Template string `toml:"template"`
+		} `toml:"named_session"`
+	}
+	if _, err := toml.Decode(string(data), &packDoc); err != nil {
+		t.Fatalf("parsing pack.toml: %v", err)
+	}
+	for _, ns := range packDoc.NamedSessions {
+		if ns.Template == "manager" || ns.Name == "manager" {
+			t.Errorf("manager must not be a configured named session; found entry: name=%q template=%q", ns.Name, ns.Template)
+		}
+	}
+}
+
 func TestCityAgentsFilter(t *testing.T) {
 	// Verify config.LoadWithIncludes with both packs produces
 	// only city-scoped agents when no rigs are registered.
-	// Effective dog from gastown override + mayor/deacon/boot = 4.
+	// Effective dog from gastown override + mayor/deacon/boot/manager = 5.
 	cfg := loadExpanded(t)
 
-	cityAgents := map[string]bool{"mayor": true, "deacon": true, "boot": true, "dog": true}
+	cityAgents := map[string]bool{"mayor": true, "deacon": true, "boot": true, "dog": true, "manager": true}
 	var explicit int
 	for _, a := range cfg.Agents {
 		if a.Implicit {
@@ -955,8 +1017,8 @@ func TestCityAgentsFilter(t *testing.T) {
 			t.Errorf("city agent %q: dir = %q, want empty", a.Name, a.Dir)
 		}
 	}
-	if explicit != 4 {
-		t.Errorf("got %d explicit agents, want 4 city-scoped agents", explicit)
+	if explicit != 5 {
+		t.Errorf("got %d explicit agents, want 5 city-scoped agents", explicit)
 	}
 }
 
