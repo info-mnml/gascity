@@ -1,5 +1,6 @@
 issue_prefix: gt
 issue-prefix: gt
 dolt.auto-start: false
+export.auto: false
 gc.endpoint_origin: inherited_city
 gc.endpoint_status: verified
