@@ -364,6 +364,7 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath string, includes []string, nameOverr
 	}
 
 	deferred := false
+	beadsInitCompleted := false
 	if !adopt {
 		deferred, err = initDirIfReady(cityPath, rigPath, prefix)
 		if err != nil {
@@ -377,9 +378,24 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath string, includes []string, nameOverr
 				w("  Beads init deferred to controller")
 			} else {
 				w("  Initialized beads database")
+				beadsInitCompleted = true
 			}
 		} else {
 			w("  Initialized beads database")
+			beadsInitCompleted = true
+		}
+	}
+
+	// Re-apply issue_prefix and types.custom against the running bd store. The
+	// gc-beads-bd init op swallows these `bd config set` calls with `|| true`;
+	// on transient Dolt failures the database is left half-configured even
+	// though init reports success, and `bd create` then fails with "database
+	// not initialized" (gt-qjs). Skip for file-backed providers (no DB) and
+	// for adopted stores (caller signaled they want the store as-is).
+	if beadsInitCompleted && providerNeedsRigBeadsConfigVerify(cityPath) {
+		if err := verifyAndCompleteRigBeadsConfig(rigPath, prefix, nil); err != nil {
+			fmt.Fprintf(stderr, "gc rig add: completing beads database init: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
 		}
 	}
 
