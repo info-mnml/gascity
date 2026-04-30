@@ -12,6 +12,7 @@ import (
 )
 
 func TestControllerScriptDeployProjectsOnlyExplicitCanonicalDoltTarget(t *testing.T) {
+	clearDoltAndCityEnv(t)
 	result := runControllerScriptDeploy(t, controllerScriptDeployOptions{
 		Env: map[string]string{
 			"GC_DOLT_HOST":     "canonical-dolt.example.com",
@@ -95,6 +96,7 @@ path = "frontend"
 }
 
 func TestControllerScriptDeployBootstrapsAfterStartSignalAndLogProbe(t *testing.T) {
+	clearDoltAndCityEnv(t)
 	result := runControllerScriptDeploy(t, controllerScriptDeployOptions{
 		LogOutputs: []string{"still starting", "City started."},
 	})
@@ -113,6 +115,7 @@ func TestControllerScriptDeployBootstrapsAfterStartSignalAndLogProbe(t *testing.
 }
 
 func TestControllerScriptDeployBootstrapsWhenLogsNeverMatch(t *testing.T) {
+	clearDoltAndCityEnv(t)
 	result := runControllerScriptDeploy(t, controllerScriptDeployOptions{
 		LogOutputs: []string{"still starting"},
 	})
@@ -127,6 +130,7 @@ func TestControllerScriptDeployBootstrapsWhenLogsNeverMatch(t *testing.T) {
 }
 
 func TestControllerScriptDeployFailsWhenBootstrapFails(t *testing.T) {
+	clearDoltAndCityEnv(t)
 	result := runControllerScriptDeploy(t, controllerScriptDeployOptions{
 		FailExecSubstring: "gc bd init -p 'gc' --skip-hooks",
 		FailExecCount:     -1,

@@ -98,7 +98,14 @@ func TestCheckTriggerCondition(t *testing.T) {
 }
 
 func TestCheckTriggerConditionUsesOptions(t *testing.T) {
-	dir := t.TempDir()
+	// Resolve symlinks so the path matches what `pwd` reports inside the
+	// shell subprocess. On macOS, t.TempDir() returns a /var/folders/… path
+	// that the kernel resolves to /private/var/folders/… when the child
+	// process chdirs into it, causing a literal string compare to fail.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 	a := Order{
 		Name:    "check",
 		Trigger: "condition",
